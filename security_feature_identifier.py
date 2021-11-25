@@ -91,16 +91,19 @@ def check_object_usage(address, token, qpath, qname, mkey, port='443', vdom=None
     """
     if vdom is None:
         vdom = 'vdom=*'
-    check_url = 'https://' + address + ':' + port + '/api/v2/monitor/system/object/usage?q_path=' + qpath + '&q_name=' + qname + '&mkey=' + mkey + '&access_token=' + token
+    check_url = 'https://' + address + ':' + port + '/api/v2/monitor/system/object/usage?vdom=' + vdom +'&q_path=' + qpath + '&q_name=' + qname + '&mkey=' + mkey + '&access_token=' + token
     try:
         response = json.loads((requests.request("GET", check_url, headers=headers, data=payload, verify=False)).text)
     except Exception as e:
         print(e)
     used_where = []
+    used_count = 0
     for x in response['results']['currently_using']:
-        used_result = {'path': x['path'], 'name': x['name'], 'attribute': x['attribute'], 'mkey': x['mkey']}
-        used_where.append({'path': x['path'], 'name': x['name'], 'attribute': x['attribute'], 'mkey': x['mkey']})
-    used_response = {'used_count': len(response['results']['currently_using']), 'used_where': used_where}
+        if x['vdom'] == vdom:
+            if response['mkey'] != 'no-inspection':
+                used_where.append({'vdom': x['vdom'], 'path': x['path'], 'name': x['name'], 'attribute': x['attribute'], 'mkey': x['mkey']})
+                used_count += 1
+    used_response = {'used_count': used_count, 'used_where': used_where}
     return used_response
 
 def check_security_feature(address, token, qpath, qname, port='443', vdom=None):
@@ -129,6 +132,7 @@ def check_security_feature(address, token, qpath, qname, port='443', vdom=None):
             return_vdom_results.append({'name': y['name'], 'used': check_profile})
         return_results.append({'vdom': x['vdom'], 'results': return_vdom_results})
     return return_results
+
 
 def collect_config():
     """
