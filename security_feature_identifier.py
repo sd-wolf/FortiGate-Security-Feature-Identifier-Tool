@@ -1,5 +1,6 @@
 import argparse
 from argparse import RawTextHelpFormatter
+import re
 import requests
 import urllib3
 import json
@@ -37,15 +38,17 @@ headers = {}
 fortigates = []
 config_filename = 'config.ini'
 csv_name = 'security_features.csv'
+regex_version = "^v7.*$"
+
 
 def import_config():
     """
     This function is used to import the config file, or if the config file is not present, prompt the user for the FortiGate details.
     """
     print('')
-    print('-------------------------------------------------------')
+    print('-----------------------------------------------------------')
     if os.path.isfile(config_filename):
-        print('FortiGate configuration file exists. Using for parsing.')
+        print('| FortiGate configuration file exists. Using for parsing. |')
         configParser = configparser.RawConfigParser()
         configFilePath = config_filename
         configParser.read(configFilePath)
@@ -58,7 +61,7 @@ def import_config():
         port_input = input('Enter FortiGate HTTPS port: ')
         fortigate_details = [[fortigate_input, api_input]]
         fortigates.append({'address': fortigate_input, 'api_key': api_input, 'port': port_input})
-    print('-------------------------------------------------------')
+    print('-----------------------------------------------------------')
     print('')
 
 def get_fortigate_hostname(address, token, port):
@@ -125,11 +128,19 @@ def check_security_feature(address, token, qpath, qname, port='443', vdom=None):
     for x in response:
         return_vdom_results = []
         for y in x['results']:
+            ssl_inspections = {}
             try:
                 check_profile = check_object_usage(address, token, qpath, qname, y['name'], port, x['vdom'])
             except Exception as e:
                 print(e)
-            return_vdom_results.append({'name': y['name'], 'used': check_profile})
+            if qname == 'ssl-ssh-profile':
+                if bool(re.search(regex_version, x['version'])):
+                    ssl_inspections = {'ssl': y['ssl']['inspect-all'], 'https': y['https']['status'], 'ftps': y['ftps']['status'], 'imaps': y['imaps']['status'], 'pop3s': y['pop3s']['status'], 'smtps': y['smtps']['status'], 'ssh': y['ssh']['status'], 'dot': y['dot']['status']}
+                else:
+                    ssl_inspections = {'ssl': y['ssl']['inspect-all'], 'https': y['https']['status'], 'ftps': y['ftps']['status'], 'imaps': y['imaps']['status'], 'pop3s': y['pop3s']['status'], 'smtps': y['smtps']['status'], 'ssh': y['ssh']['status'], 'dot': 'disable'}
+                return_vdom_results.append({'name': y['name'], 'used': check_profile, 'inspections': ssl_inspections})
+            else:
+                return_vdom_results.append({'name': y['name'], 'used': check_profile})
         return_results.append({'vdom': x['vdom'], 'results': return_vdom_results})
     return return_results
 
@@ -182,6 +193,49 @@ def confirm_usage(security, vdom):
         used_count = 0
     return security_used
 
+def confirm_usage_ssl(security, vdom):
+    """
+    This function takes the input results, and then uses it to determine whether the security feature is enabled, and returns Yes or No.
+    Note: There is a small issue identified with profiles with the name 'g-wifi-default' and 'wifi-default', these have been excluded from results.
+    """
+    security_used = 'No'
+    used_count = 0
+    for x in security:
+        if x['vdom'] == vdom:
+            for y in x['results']:
+                used_count = y['used']['used_count']
+                if 'wifi-default' in y['name']:
+                    for z in y['used']['used_where']:
+                        if (z['path'] == 'wireless-controller' and z['name'] == 'utm-profile'):
+                            used_count = -1
+                if used_count > 0:
+                    if y['inspections']['ssl'] == 'deep-inspection':
+                        if security_used == 'Certificate only':
+                            security_used = 'Deep & Certificate'
+                        elif security_used == 'No':
+                            security_used = 'Deep only'
+                    elif y['inspections']['ssl'] == 'certificate-inspection':
+                        if security_used == 'Deep only':
+                            security_used = 'Deep & Certificate'
+                        elif security_used == 'No':
+                            security_used = 'Certificate only'
+                    else:
+                        if 'deep-inspection' in (y['inspections']['https'], y['inspections']['ftps'], y['inspections']['imaps'], y['inspections']['pop3s'], y['inspections']['smtps'], y['inspections']['ssh'], y['inspections']['dot']):
+                            if 'certificate-inspection' in (y['inspections']['https'], y['inspections']['ftps'], y['inspections']['imaps'], y['inspections']['pop3s'], y['inspections']['smtps'], y['inspections']['ssh'], y['inspections']['dot']):
+                                security_used = ' Deep & Certificate'
+                            else:
+                                if security_used == 'Certificate only':
+                                    security_used = 'Deep & Certificate'
+                                elif security_used == 'No':
+                                    security_used = 'Deep only'
+                        elif 'certificate-inspection' in (y['inspections']['https'], y['inspections']['ftps'], y['inspections']['imaps'], y['inspections']['pop3s'], y['inspections']['smtps'], y['inspections']['ssh'], y['inspections']['dot']):
+                            if security_used == 'Deep only':
+                                security_used = 'Deep & Certificate'
+                            elif security_used == 'No':
+                                security_used = 'Certificate only'
+        used_count = 0
+    return security_used
+
 def create_output(fgt_config_output):
     """
     This function takes the results of all the FortiGates from collect_config, and for each FortiGate, uses the confirm_usage function to determine
@@ -209,7 +263,7 @@ def create_output(fgt_config_output):
             ac_security = confirm_usage(x['appcontrol'], y)
             ips_security = confirm_usage(x['ips'], y)
             dlp_security = confirm_usage(x['dlp'], y)
-            ssl_security = confirm_usage(x['ssl'], y)
+            ssl_security = confirm_usage_ssl(x['ssl'], y)
             security_output.append({'VDOM': y,'Anti-Virus': av_security, 'Web Filtering': wf_security, 'Video Filtering': vf_security, 'DNS Filtering': dns_security, 'Application Control': ac_security, 'Intrusion Prevention': ips_security, 'Data Leak Prevention': dlp_security, 'SSL/SSH Inspection': ssl_security})
         full_output.append({'hostname': x['hostname'], 'version': x['version'], 'address': x['address'] ,'security': security_output})
         fg_details.append({'FortiGate': x['hostname'], 'Version': x['version'], 'Address': x['address']})
